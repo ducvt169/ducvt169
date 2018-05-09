@@ -1,0 +1,1154 @@
+---
+title: "Tagging method for text mining"
+author: "Duc Vu Trung"
+date: "May 8, 2018"
+output:
+  pdf_document: default
+  html_document: default
+---
+<style type="text/css">
+
+body{ /* Normal  */
+      font-size: 12px;
+  }
+td {  /* Table  */
+  font-size: 8px;
+}
+h1.title {
+  font-size: 38px;
+  color: DarkRed;
+}
+h1 { /* Header 1 */
+  font-size: 28px;
+  color: DarkBlue;
+}
+h2 { /* Header 2 */
+    font-size: 24px;
+  color: DarkBlue;
+}
+h3 { /* Header 3 */
+  font-size: 20px;
+  font-family: "Times New Roman", Times, serif;
+  color: DarkBlue;
+}
+h4 { /* Header 4 */
+  font-size: 18px;
+  font-family: "Times New Roman", Times, serif;
+  color: DarkBlue;
+}
+
+code.r{ /* Code block */
+    font-size: 12px;
+}
+pre { /* Code block - determines code spacing between lines */
+    font-size: 14px;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set( warning=FALSE, message=FALSE)
+                      
+```
+
+# Preface
+
+This articles is written based on the ideas of `Tidy Text Mining with R book`. Specifically thanks to `Hadley Wickham` (tidyverse), `Julia Silge`,`David Robinson` (tidytext, widyr) and `Tyler Rinker`(qdap,sentimentr) and other R authors for their wonderful packages.  
+
+The articles focus on dealing with some specific problems in text mining, like: Spell checking,
+negation, phrasal verb and the usage of tagging in sentiment analysis.It discuss pros and cons of multiple tools in text analysis. It broaden the ideas of sentiment analysis to (hopefully) make it more effective and meaningful. Visualization methods in this articles are minimal, as it is perfectly covered in `Tidy Text Mining with R book`
+
+Throughout the articles, the following packages are used (There will be other packages for some specific problems):
+
+```{r,message=F,warning=F,}
+library(tidyverse) 
+library(tidytext)
+library(qdap)
+library(qdapDictionaries)
+library(sentimentr)
+library(hunspell)
+library(widyr)
+library(openNLP)
+library(openNLPdata)
+library(openNLPmodels.en)
+library(NLP)
+options(stringsAsFactors = F)
+```
+Text mining process will be divided into 4 steps:  
+
+- __Cleaning__ the raw text
+- __Tokenization__ into different levels: paragraph, sentences, bigram, words
+* __Taggings/ join__ : It will tags each levels with different ID, sentiments, etc for further analysis. With tagging, the number of rows after tokenization will remain (eg: use left_join) while with joining, the original dataframe will be reduced
+*  __Analyze__: Use statistical tools to extract helpful information
+
+\pagebreak
+
+# 1 Cleaning
+> Clean or not clean, that is the question - Anonymous  
+
+We start with an example:
+
+```{r}
+# Load the library specified in preface
+dat1 <- as.tibble("I saw Ms.Julia yesterday. She is quite gorgeous")
+dat1 %>% unnest_tokens(sentence,value,token = 'sentences')
+
+```
+As `unnest_tokens()` use `<.>` as the seperator to split, the sentence tokenization above is incorrect. A little cleaning would help:
+```{r}
+# Load the library specified in preface
+dat1 <- tibble("I saw Ms.Julia yesterday. She is quite gorgeous")
+dat1 %>% replace_abbreviation() %>% as.tibble() %>% 
+  unnest_tokens(sentence,value,'sentences')
+```
+It looks better after the cleaning!  
+However, cleaning sometimes can make garbages! Let's see other examples:
+```{r ,results='markup'}
+# Load the library specified in preface
+# Rekless cleaning:
+dat1 <- tibble("I live in rooms.104 .It is very well-decorated")
+dat1 %>% replace_abbreviation() %>% as.tibble() %>% 
+  unnest_tokens(sentence,value,'sentences')
+# Cleaning with a litle care:
+dat1 <- tibble("I live in rooms.104 .It is very well-decorated")
+dat1 %>% replace_abbreviation(ignore.case = F) %>% as.tibble() %>% 
+  unnest_tokens(sentence,value,'sentences')
+```
+We can see from above example that sometimes, cleaning will produce unexpected results. It is unlikely to check all results(It is against the rule of programming!). Remember that, after cleaning, we will have 2 other process before any analysis(tokenization and tagging). Hence, we must answer following question before any thoughts of cleaning:  
+
+  * Will the results of cleaning distort or help the tokenization and analysis(eg: sentiment analysis)?
+  * Will the results of cleaning can be overlapped/easily dealt with later(eg: tokenization will remove leading and trailing space).  
+We will go into detail to see some of the common cleaning and its pros/cons
+
+## 1.1 General cleaning
+### 1.1.1 Use `mgsub()` for cleaning
+`qdap` has many wonderful technique for cleaing, but it can not offer an 1-for-all solutions.Therefore, We should(must) personalize our cleaing to meet certain needs. We will continue the abbreviation cleaning above:
+```{r }
+# qdap abbreviation list:
+qdapDictionaries::abbreviations
+```
+```{r,results='hold',warning= F}
+# We want to add other words,eg : A.S.A.P ( as soon as possible):
+# Create a modified table of abbr
+abbr_mdf <- qdapDictionaries::abbreviations %>% as.tibble() %>% 
+  bind_rows(data.frame(abv = c('A.S.A.P'),rep =c('as soon as possible')))
+# Use mgsub() 
+" I will see you A.S.A.P,before 7 P.M. , Ms. Julia " %>% mgsub(abbr_mdf$abv,abbr_mdf$rep,.)
+```
+General steps for cleaning are:
+
+  * Start with a pre-defined tables ( `qdapDictionaries` library is a good source!)
+  * Add (using `rbind()` with other dataframe) or remove (using `filter()`)
+  * Use `mgsub()` for multiple replacement!
+
+### 1.1.2. Replace contraction  
+Contraction is very important in raw text cleaning as there are many negations like `didn't`,`don't`. Ignoring it will affect the sentiment analysis later. Replace word like `don't` with `do not` will help tokenization and analysis later. The posibility of distortion is quite low as the `'` is quite unique.
+
+```{r}
+"I don't like her. He doesn't like here,too" %>% 
+  replace_contraction() %>% as.tibble() %>% 
+  unnest_tokens(word,value)
+  
+```
+We can see that both `don't` and `doesn't` will return only `not`, hence it is easier for sentiment analysis later. ( I will discuss how to shift the sentiment of word `like` from positive to negative in the next chapter)
+
+### 1.1.3 More on abbreviation
+As we see in the above example, abbreviation with the `<.>` will distort the sentence tokenization. Therefore, it should be replaced.  
+However,in order to lower the chance of unexpected behavior, (remember the `<rooms. 101>` above?), we should only replace words with upper case by specify `ignore.case = T`  
+As `mgsub()` doesn't have the args: `ignore.case`,if we want to add more words, we simply `replace_abbreviation()` one time, then create an other `abbr_mdf` dataset later and do the substitution again
+```{r}
+# Load the library specified in preface
+" I will see you A.S.A.P,before 7 p.m. " %>% 
+  replace_abbreviation() %>% 
+  mgsub(abbr_mdf$abv,abbr_mdf$rep,.)
+```
+
+### 1.1.4 Some unnecessary cleanings:
+  * __Remove number__ is unnecesary,eg: `123` will turn to `one two three` which, after tokenization will become `one`,`two`,`three` and very distorting. If we find the number is totally unnecessary, then simply use `filter()` 
+  * __Word stemming__ sounds really fancy, but it seems to do more harm than good.Lets see an example:
+```{r}
+"he is the only ones who work on Sunday " %>% 
+  as.tibble() %>% 
+  unnest_tokens(word,value) %>% 
+  mutate(word = SnowballC::wordStem(word) )
+```
+
+You can see how disturbing the stemming is!  
+But the question is, if we do not stem the words, will it affect sentiment analysis ? You can check `get_sentiment('bing')` for the some words, eg: `love`:
+```{r}
+get_sentiments('bing') %>% filter(str_detect(word,'love'))
+```
+
+It seems that `bing` (the most common sentiment dataset) provide different tense and form of a word that we don't need to do the word stemming  
+  * __Space__ and __escaped character__: trimming and leading space will be erased through the unnest tokens, so it will be necessary, however for the space-in-the-middle, in order to provide for the phrasal verb ( which I will discuss later), we should remove the middle space. Escaped character will be removed in tokeniztion, too  
+  * __Punctuation__ : Never think of removing punctuation in raw text, otherwise you can never tokenize into sentences!
+
+### 1.1.5 Should we change the case?  
+  * __Case of words__ is really important to identify the entity name, and, more importantly, the __tagger__ for tokenization. See the example below:
+```{r,results='hold'}
+"the weekend is a good time to relax. Sunday is the best" %>%
+  str_to_lower() %>% 
+  as.tibble() %>% 
+  unnest_tokens(sentence,value,'sentences')
+
+"the weekend is a good time to relax. Sunday is the best" %>%
+  #str_to_lower() %>% 
+  as.tibble() %>% 
+  unnest_tokens(sentence,value,'sentences')
+```
+We can see how changing the case can affect the tokenization process!
+
+  * However, in the tagging/joining step, it is really important to convert all words to lower case ( or upper case) to enable join to a look-up table ( We need to convert the case of the look-up table, too!)
+
+## 1.2 Some specific case of raw-text cleaning:
+###1.2.1 Spell checking
+
+Some words in English is complicated and vunerable to mistake, like `embarrassing`, have different ways of use, like `advisor` vs `adviser`, or simply the contraction/abbreviation, like `mins` for `minutes` and `didnt` vs `didn't`. 
+
+#### 1.2.1.1 Detecting misspelled words  
+Misspelled words will have a great impacts if they are sentiment words  
+
+> Consider the following example
+
+```{r}
+library(sentimentr)
+c("Your method is not helpfull at all. It is so embarassing to use it.") %>% 
+  sentiment()
+# After spell check
+c("Your method is not helpful at all. It is so embarrassing to use it.") %>% 
+  sentiment()
+```
+
+`sentiment()` in `sentimentr` library is quite an advanced method, but it fails to recognized any sentiments here since the words that indicate sentiments are misspelleded ( It recognize the sentiments correctly after the spell-checking, though)
+
+> Let's go checking the spell in a (first) big example
+
+```{r,echo=TRUE,message=F}
+# load package in preface
+# use hotel_reviews table above
+library(sentimentr)
+names_modified <- qdapDictionaries::NAMES %>% as_tibble() %>% 
+  mutate(word = str_to_lower(name)) # list of name in English
+# Get the words which are misspelleded
+word_mispelled <- hotel_reviews %>% as.tibble() %>% 
+  unnest_tokens(word,text,to_lower = F) %>% 
+  filter(hunspell_check(word)==F) %>% 
+  mutate(word = str_to_lower(word)) %>% 
+  anti_join(parts_of_speech) %>% 
+  anti_join(names_modified) %>% 
+  count(word,sort = T) 
+```
+```{r}
+word_mispelled
+```
+
+In the example above, first we check the spell by `hunspell()` function. However, this function is quite rigorous on case-sensitivity so it might overlook some words, eg `WiFi` is recognized, but not `wifi` . Then we convert word to upper case and lookup to the word in English dictionary in `part_of_speech`. Finally, we remove some English names.  
+
+#### 1.2.1.2 Correct misspelled words
+  a) __hunspell_suggest()__ provide a very nice way to deal with misspelled words. 
+> For examples
+
+```{r}
+x <- "tihs si ym nmae. It isnt a niec nema. Quite an embarasing one. " 
+y <- "Hey, Jesie, Michaell, wifi doesnt work. It is really bad"
+
+check_spell <- function(x){
+  as.tibble(x) %>% 
+    unnest_tokens(word,value) %>% 
+    filter(hunspell_check(word)==F) %>% 
+    mutate(correct =  hunspell_suggest(word) %>% str_extract('\\b\\w{2,}\\b'))
+}
+                        
+# Note that we can never misspell a word with a single character,
+# so I only extract words with 2 characters and more
+check_spell(x)
+check_spell(y)
+
+```
+We can see from the example, it fails to recognize some common mistake like `wifi`, `realy` and contraction `doesnt`.However, we already dealt with contraction previously, so it no longer pose any problems. Btw, you can use my `check_spell()` function to automatically check words! However, it should be noted that some non-English name work are extremely hard to check, making the process very slow. I did the same check on the `word_mispelled` table above and it takes more than 10 minutes! Here is some note on using `hunspell_suggest()` function:  
+
+  * Consider contractions (must be cleanned earlier).
+  * Consider any abbreviations (eg: `mins`).
+  * Long words are better than short words as the string distance of correct and incorrect long words are lower.
+  * Non-English words are very slow to check spell. Be careful!
+
+  b) Manually check spell:
+  
+Check spelling is never an easy job, and if the machine can not deal with it, let the human do! However, we don't need to check every word for spelling, just choose the words with high frequency or words that we believe that can change the sentiment analysis!  
+
+Manually checking spell doesn's mean that you will repeat every time. Just form a common table of common misspelled words, and use `mgsub()` ( see __1.1.1__ for more details). 
+> For examples
+
+```{r}
+y <- "Hey, Jesie, Michaell, wifi doesnt work. It is really bad"
+misspelled_correct <- data_frame(word = c('wifi','realy'), correction = c('WiFi','really'))
+mgsub(misspelled_correct$word,misspelled_correct$correction,y)
+```
+
+Days after days, your mispelled correction table will become big enough so that no manual check is necessary!
+
+### 1.2.2 Deal with compound words,phrasal verb and emoticon:
+"An emoticon is worth than thousand words" - Anonymous  
+
+I put 3 types of problems in the same category as in raw-text cleanin, we treat it the same way! (They will be quite different in the analysis process, though).
+
+> Let's start with an example
+
+```{r}
+#Phrasal verbs:
+"He seems to get over" %>%  sentiment()
+"I throw up when I see her" %>%  sentiment()
+```
+```{r}
+# Compound words:
+"She is narrow-minded "%>%  sentiment()
+"It is a record-breaking performance" %>% sentiment()
+```
+```{r}
+# Emoticon:
+"It is the saddest moment I had in my life :))" %>%  sentiment()
+"I was so happy those day :(" %>%  sentiment()
+```
+We can clearly see in case of phrasal verb and compound words, the single words here are neutral, or negative (`record` in `record-breaking`), but the compounded one has very clear sentiments so that the sentiments calculated is not correct!
+
+In case of emoticon, if the users use the emo correctly, then the emoticon alone can decide the sentiment of the whole sentence!. The first one will become a happy, and the second one will become a sad statement, despite the word components doesn't show anythings like that!
+
+The idea to deal with those problems are: turning them into __unigram__ (single word). Of course, for compound words/ phrasal verbs, we can examine the bigrams. However, it means that we need to make an other columns and go through many steps to shift the sentiments (which I will discuss later) and it is very clunky to do so. Working with unigram will make our analysis universal:
+
+  * Deal with compound words/phrasal verbs:
+
+```{r, results= 'hold'}
+library(stringr)
+compound_word <- tibble(
+  word =c('get over','throw up','narrow-minded','record-breaking'),
+  replacement = c('get_over','throw_up','narrow_minded','record_breaking'),
+  sentiment = c(1,-1,-1,1))
+# function to clean
+compound_sentiment <- function(x){
+    x  %>%  str_trim %>% 
+    mgsub(compound_word$word,compound_word$replacement,.) %>% 
+    as_tibble() %>% 
+    unnest_tokens(word,value) %>% 
+    inner_join(compound_word,by = c('word'='replacement')) 
+}
+# test the function
+compound_sentiment('he seems to get over')
+compound_sentiment("It is a record-breaking performance")
+```
+It seems to be much better now. It should be noted that phrasal verb use preposition words like `up`,`down` to form the verb, and they are all stop words in `stop_words` table. Therefore, convert the raw-text before any transformation is a good way to preserve the meaning.
+
+  *  Deal with emoticons:  
+The idea is quite similar, turn emoji into unigram. However, in order to recognize it as emoji, we should add the prefix `emo_` .  
+The `qdapDictionaries::emoticon` is a very nice dataset to deal with emoji
+
+```{r}
+x <- "It is the saddest moment I had in my life :)"
+y <- "I was so happy those day :("
+# create a function to give proper explanation for emoji:
+make_emo <- function(x){
+str_split(x,pattern = ' ') %>% 
+  .[[1]] %>% 
+  str_c(collapse = '_') %>%
+  str_c('emo_',.)
+}
+# Apply make_emo function to qdap table of emoticon. If want more emoticon, just add others!
+emo_table <- qdapDictionaries::emoticon %>%  as.tibble() %>% 
+  mutate(new_meaning = sapply(.$meaning,make_emo))
+# Replace emoticon with the right unigrams
+mgsub(emo_table$emoticon,emo_table$new_meaning,x)
+mgsub(emo_table$emoticon,emo_table$new_meaning,y)
+
+```
+Now all of the emos become unigrams and are very distinguisable!
+
+\pagebreak
+
+# 2 Tagging/Tokenization
+## 2.1 Tagging:
+  * Steps of tagging:
+    - Tokenize text data to paragraph, sentence, and word(bigram) level
+    - For each level, there will be ID number: para_ID,sentence_ID, word_ID-->> position tagging
+    - Add characteristics column,eg: sentiment (different method) at para_ID, sentence_ID, word_ID, part of speech, negation, emoticon without reducing the word- level dataframe.
+    
+> We will start with a basic example of tagging
+
+```{r,message=F}
+# Load library in preface
+# Use hotel_reviews dataset from sentimentr
+# Use View() to see the results in Rstudio as it really big
+hotel_sentence<- hotel_reviews %>%  head(1000) %>% 
+  mutate(text = replace_contraction(text)) %>% 
+  select(text) %>% 
+  get_sentences() %>% 
+  mutate(snt_sentiment = sentiment(.$text)$sentiment,
+         sentence_id = row_number()) %>% 
+  select(element_id,sentence_id,sentence = text,snt_sentiment)
+
+```
+It should be noted that, in the example above, I use `get_sentences()` from `qdap`, not `unnest_tokens()` because  the function `sentiment()` only work with sentences split by `qdap` function. The results are very similar between 2 methods, though.
+
+```{r,message=F}
+#qdap_score is at sentence level, bing and afinn is at word level
+# For convenience in computation, sentiment score will be converted to 1 (positive)
+# 0(no sentiment) and -1 (negative).
+library(zoo)
+hotel_word <- hotel_sentence %>% 
+  unnest_tokens(word,sentence) %>% 
+  mutate(word_id = row_number()) %>% 
+  left_join(get_sentiments('bing')) %>% 
+  mutate(sentiment = case_when(sentiment=='positive'~1,sentiment=='negative'~-1,
+                                    is.na(sentiment)~0)) %>% 
+  # left_join(get_sentiments('afinn')) %>% 
+  # mutate(score = na.fill(score,0)) %>% 
+  mutate(qdap_score= case_when(snt_sentiment >0 ~1,snt_sentiment < 0 ~ -1, T ~ 0),
+         bing = case_when(sentiment >0 ~ 1,sentiment <0 ~-1, T ~0)) %>% 
+  select(element_id,sentence_id,word_id,word,qdap_score,bing)
+head(hotel_word,15)
+```
+
+>Now we can calculate sentiment score based on each method
+
+```{r}
+hotel_sentiment <- hotel_word %>% 
+  group_by(sentence_id) %>% 
+  summarise(qdap_score = mean(qdap_score), bing = sum(bing))
+head(hotel_sentiment,10)
+```
+
+> The method using `spread()` in tidyr will return the same results:
+
+```{r,message=F}
+hotel_sentiment2 <- hotel_sentence %>% 
+  unnest_tokens(word,sentence) %>% 
+  inner_join(get_sentiments('bing')) %>% 
+  count(sentence_id,word,sentiment) %>% 
+  spread(sentiment,n,fill =0) %>% 
+  group_by(sentence_id) %>% 
+  summarise(bing = sum(positive- negative))
+
+# table hotel_sentiment2 already exclude sentence with sentiment =0
+hotel_sentiment2 %>%  setequal(hotel_sentiment %>% 
+                        semi_join(hotel_sentiment2,by = c('sentence_id'='sentence_id')) %>% 
+                        select(sentence_id,bing))
+```
+
+Now we can check which sentence in which qdap_score( complicated algorithm) is different from bing score( simple algorithm):
+
+```{r,message=F}
+# We must do the score conversion again so there are only 3 values: 1,0,-1
+# Text data is big, so use View() to see the results
+qdap_vs_bing <- hotel_sentiment %>% 
+     mutate(bing = case_when(bing >0~1, bing <0 ~ -1, T ~ 0)) %>% 
+     filter(qdap_score != bing)
+
+score_diff_sentence <- hotel_sentence %>% 
+  inner_join(qdap_vs_bing)
+
+```
+Out of `r nrow(hotel_sentence)`, there are `r nrow(score_diff_sentence)`. You can manually check each sentences to see the the differences! In most situation, `qdap_score` way is more accurate!
+
+## 2.2. The advantages of tagging method:
+  * Cons:
+    - The size of table is bigger compared to the inner join( "reduced" method).Normally, there are 3 position tagging columns( paragraph, sentence, word level) and 4-12 charactersitics tagging columns ( it depends!). If the number of words are around 20 millions. then the size of word-level table will be around 3GB!
+    - It is very SQL-like or Pivottable-like which seems to be old-fashioned.  
+  * Pros:
+    - __Position-tagging__ allow us to trace back easily. From the example above, we can easily trace back to see which sentences that the `qdap_score` is different from `bing_score`
+    - It allow many __combinations__ ( I will discuss it in chaper 3) . For example, combine `sentence_id`, `qdap_score` can answer the question : _Which sentences is negative ?_. After that, we can combine with the original bing_score ( at word level) to answer: _Which is negative words in negative sentences?_ It is just 1 combination. 1-for-all tables will easily stimulate combination for the analyst. It depends on their ideas!  
+    - __1-for-all table__ ( word level) will also make __interactive graphics__ a piece of cake! Each tagging column will become the filtered column for the graphics, hence making the process easier. In the scope of this articles, I will not go discussing the interactive graphics here
+
+## 2.3 Deal with negations
+We go back to our beloved negations! For simplification, I will use a different examples:
+```{r}
+# The paragraph below is full of negation
+x <-" I live without any happiness. It is not a very happy one. I couldn't be succesful. 
+There 's no things lucky happen in my life. Nobody loves me. No ones appreciate me.
+Anyway, it is not really a disaster "
+```
+> Firstly, we create the personal negation words and stop words
+
+```{r}
+negation_words <- c(negation.words,'without')
+# We need to remove negation words from stop_words--> anti_join later will not filter out
+# some sentiments words in bing is stopwords--> need to remove 
+stop_words_mdf <- stop_words %>% 
+  filter(!word %in% negation_words) %>% 
+  filter(!word %in% get_sentiments('bing')$word) %>% 
+  bind_rows(data_frame(word = qdapDictionaries::amplification.words))
+```
+>Then we create a word-level with position tagging
+
+```{r}
+word_level <- x %>% replace_abbreviation() %>% 
+  replace_contraction() %>% 
+  as.tibble() %>% 
+  unnest_tokens(sentence,value,'sentences') %>% 
+  mutate(sentence_id = row_number()) %>% 
+  unnest_tokens(word,sentence) %>% 
+  mutate(word_id = row_number()) 
+word_level
+```
+> Make the list of negation words
+
+```{r,message=F}
+#Most of word between negation words and sentiment words are stop words.-->
+#--> Therefore, it will be filtered out
+negation <- word_level %>% anti_join(stop_words_mdf) %>% 
+  group_by(sentence_id) %>% 
+  mutate(negation = lag(word)) %>% 
+  filter(negation %in% negation_words) %>% 
+  inner_join(get_sentiments('bing'))
+negation
+```
+> Now we will shift the word sentiments!
+
+```{r,message=F}
+# As we tag word_id, it is easy to perform the join
+word_level_negate <- word_level %>% 
+  left_join(negation) %>% 
+  mutate(negation = if_else(is.na(negation),0,-1),
+         sentiment = case_when(sentiment=='positive'~ 1, sentiment =='negative'~ -1,
+                               is.na(sentiment)~0),
+         sentiment_mdf = sentiment *negation)
+
+
+word_level_negate %>% filter(sentiment != 0)
+```
+
+> All the happy words become sad one, and sad becomes happy!
+
+The complication of negation arise from the fact that the negation and sentiment words doesn's not comes hand in hand! Eg: `not really happy` or `without any happiness`. There are 1 word to seperate them. Luckily,most of the words stand between them are either amplification words or stop words, so we can easily remove!
+
+> Also we need to pay attention to deamplification words, too!
+
+```{r}
+qdapDictionaries::deamplification.words
+```
+In my opinion, most of deamplification words, eg: `hardly`,`barely` can be considered as negations and add to negation words. For example, `I can barely win` is similar to `I can not win`. Of course, there are many other possibilities that I can not list down in this articles (Well I am not a native English speaker so my linguistic skills are quite restricted), but I believe that with my methods, people can fully customize their analysis!
+Let's see how to apply my ideas into phrasal verb/compound words situation
+
+## 2.4 Deal with phrasal verbs/ compound words:
+I discuss the phrasal verbs problems in detail in the `1.2.2`,therefore, in this section, I will only dicuss further problems:
+  * Most of the time, phrasal verbs/ compound words go hand in hand (eg: like a bigram or trigram). There s no noise words between them so things are quite easy
+  * Remember to add `_` between words, so that it will turn bigram/trigram into unigram.The rest are simple sentiment analysis as word position are tagged with word_id
+  * Some combination should be paid attention to, eg `let sb down` . 
+  * Remember to add tense to the list of phrasal verb sentiments. eg: `come` will have `came`,`comes`, so that we dont overlook some words
+  
+## 2.5 Deal with emoticon
+Emoticon seems to be easily dealth with very easily (see `1.2.2` for more details), however, there are some complication that should be noted:
+
+  * Emoticons, if existed, and used correctly, can decide the sentiment of the __sentence__ alone, no matter what the content is!. Eg ` I was so sad :)) ` and ` I was so happy :))` are both happy statements,if the users use emoticon correctly. There is __no sentiment shift__, unlike negations
+  * However, the likelihood of users being sarcastic or using emoji incorrectly are very high, compare to word usages. From my observation, some one even use `:(` or `:((` just for fun (me,too!), especially in chat. But the longer the comment is, then the more serious the user is, the chance of emoji being used correctly will be higher.
+  * Emoji spammer should be simply ignored. It is unlikely to analyze it, and the content is very doubtful!
+  
+> Consider the following examples
+
+```{r}
+s1 <- " I am so sad, :( :( :( :( :( . I hope u can help me :P :P "
+s2 <- " The hotel service is quite good, and I will definitely recommend it to others :)"
+```
+
+We can clearly see that the comment1 is not very serious, and we can never know the intention of the comments without the whole context. While the comment2 is very likely that the users use the right emoji to express a happy experiences. A simple counting of emoticon would help, and it depends a lot on the context of analysis.
+
+## 2.6. Can we add bigram to the word-level dataframe?
+Most of the problems that we need bigram to deal with ( negation,compound words) are handled by my methods above. However, some specific words like `Miss Julia`, `Captain BlackJack` should not be overlooked!
+
+However, difference in length between bigrams and unigram pose a problems. Eg: `I lover her` has 2 bigrams, but 3 unigram. In any situation, the difference in length is 1
+
+> Let's deal with it 
+
+```{r}
+x <- "Miss Julia is so gorgeous. I really admire her so much"
+# Make a bigram and seperate it into words
+bigram <- x %>% as.tibble() %>% 
+  unnest_tokens(sentence,value,'sentences') %>% 
+  mutate(sentence_id = row_number()) %>% 
+  unnest_tokens(bigram,sentence,'ngrams',n =2) %>% 
+  group_by(sentence_id) %>% 
+  mutate(bigram_id = row_number()) %>% 
+  separate(bigram,c('word1','word2'),remove = F)
+# In each group, only get the first word1, tag the position of 0
+add_unigram <- bigram %>% #mutate(word2 =first(word1)) %>% 
+  filter(bigram_id ==1) %>% 
+  mutate(word2 =word1, word1 = NA_character_, bigram_id =0,bigram = NA_character_)
+# bind rows and arrange
+word_level <- bind_rows(bigram,add_unigram) %>% 
+  arrange(sentence_id,bigram_id) %>% 
+  ungroup() %>% 
+  mutate(word_id = row_number()) %>% 
+  select(sentence_id, word_id, bigram, word = word2)
+word_level  
+```
+> Our word_level dataframe are nearly complete!
+
+## 2.7 Steming
+As my discussion in 1.1.4, use stemming for cleaning is disturbing. However, after tokenizing to word-level dataframe, it can give some useful insights to the users! We can simply have another tagging columns without any harms!
+
+There are 2 libraries that are most prominent in wordstemming: `SnowballC` and `hunspell`
+```{r}
+x <- 'My employers employ 
+a method so that employee can provide a good provision'
+# use SnowballC
+x %>%  as.tibble() %>% 
+  unnest_tokens(word,value) %>% 
+  mutate(word_stm = wordStem(word))
+
+#hunspell_stem() returns a list, therefore a litte work might be needed
+x %>%  as.tibble() %>% 
+  unnest_tokens(word,value) %>% 
+  mutate(word_stm = hunspell_stem(word) %>% str_extract('\\b\\w+\\b'))
+```
+
+We can see from the results, `SnowballC::wordStem` seems to reduce words to its roots, and most of the time,in my opinion, it distort the meaning so that we can not understand what the word really means. On the other hand, words with `hunspell_stem()` reduce the word to the word-levels. Personally, I prefer the hunspell function, but it is up to personal preference!
+
+## 2.8 Part of speech (POS)
+We begin with an examples:
+```{r}
+# Load library specified in preface
+# This example is to extract POS from text, return results in tidy text form
+# Train the model for the fist time:
+sent_token_annotator <- Maxent_Sent_Token_Annotator()
+word_token_annotator <- Maxent_Word_Token_Annotator()
+ent_person <- Maxent_Entity_Annotator('en','person')
+ent_location <- Maxent_Entity_Annotator('en','location')
+ent_org <- Maxent_Entity_Annotator('en','organization')
+pos_tag_annotator <- Maxent_POS_Tag_Annotator()
+# Extract POS and return in tidy text form
+x <- "His name is Barrack Obama. Michelle Obama is his wife. His idol is Micheal Jackson.
+He used to travel to Canada and now he works in London"
+s <- as.String(x)
+a <- annotate(s, list(sent_token_annotator,word_token_annotator,pos_tag_annotator, ent_person,
+                       ent_location,ent_org)) %>% 
+  as_tibble() %>% 
+#Use regex to extract string from list of characters
+  mutate(type2 = str_extract(features,'(?<=\").*(?=\")') ,
+         name = str_sub(s,start,end),
+         sentence_id = i) %>% 
+  select(type2,name,sentence_id) %>% 
+  filter(str_detect(type2,'\\b[A-Z$]+\\b'))
+```
+
+You can go to this website: <https://cs.nyu.edu/grishman/jet/guide/PennPOS.html> to check the meaning of POS abbreviation,eg: `JJ` is for `adjective`.
+
+
+
+# 3 Analyzing text
+After the 
+
+## 3.1 Some useful functions to explore data
+
+This part is quite off-track as it doesn't focus on text, but help you to work more effectively with data. I strongly believe that, in data analysis field, the idea is the most important, especially in R, where most of the tools are contributed by our beloved, enthusiastic authors.  
+
+How to have ideas? In mu opinion, we need to understand the data.
+R has some wonderful functions to do it,namely `head()/tail()` , `View()`, `str()`,`summary()` and Rstudio is simply the best IDE ever. However, as a programming language, it can never be as interactive as Excel. Excel is our friends afterall and we should never abandon it!
+
+I just want to add some small functions which I believe that can make the process of understanding data less painful. My functions will:
+
+  * Help people interactively work with Excel
+  * Help people to easily understand the categorical data
+
+### 3.1.1. View the data
+The idea is: copy the work from excel to R and vice verse via clipboards:
+
+```{r}
+# writing from R to Excel
+ex_wr <- function(x){write.table(x, "clipboard-16384",sep = '\t',row.names = F )}
+# read from Excel to R
+ex_re <-function(){e1 <- as.tibble(read.table('clipboard-16384',sep = '\t',header = T,comment.char = ''))
+                   show(head(e1,5))
+                   return(e1)
+                   }
+```
+> For example, you have a datagrame which you want to navigate in Excel
+
+```{r,eval=F}
+mpg %>% ex_wr() # then go to an Excel and Ctr+V
+```
+> And you have a table in excel that you want to read back in R right away
+
+```{r,eval=F}
+# choose the table, ctr+C
+your_data <- ex_re()
+```
+> Now you can switch between Excel and R without a sweat! 
+
+> The following ( very simple) function can help you a little bit typing time
+
+```{r}
+# View() 30 first line of table
+hview <- function(x,y =30){
+  x_name <- deparse(substitute(x))
+  x %>% head(y) %>% View(title = x_name)
+}
+# View 30 last line of table
+tview <- function(x,y = 30){
+  x_name <- deparse(substitute(x))
+  x %>% tail(y) %>% View(title = x_name)
+}
+```
+
+> For example, after a lot of works, you want to see your results very quickly 
+
+```{r,eval=F}
+your_result %>% hview() 
+```
+It can save a lot of time. Sometimes, I click on the variables in Environment (Rstudio) just to see the dataframe without knowing that dataframe is too big and it took me forever!
+
+### 3.1.2 See the categorical columns
+
+```{r}
+unq_val <- function(x,t = 3,sample_size = 1000){
+  # create a data for test if column is categorical or not
+  dt_test <- list('vector',length(colnames(x))) 
+  # if number of rows of x < sample size (1000)--> take nrow of x as sample size
+  sample_size <- min(nrow(x),sample_size)
+  for (i in seq_along(colnames(x))){
+    y <- sample_n(x,sample_size) # make a sample of x
+    dt_test[[i]]<- y[[i]] %>%  unique()# get unique value for each column of x
+  }
+    for ( i in seq_along(dt_test)){
+    if(length(dt_test[[i]])< sample_size/t){
+      # if number of unique value < sample_size/t (t =3)--> categorical
+      dt_test[[i]]<- dt_test[[i]]
+    }                                    
+    else{
+      # non categorical data--> don't need to get unique value-->
+      # --> assign them zero length --> filer out later
+      dt_test[[i]] <- vector() 
+    }
+  }
+  names(dt_test) <- names(x)# give colname for the data test
+  # Get the names of columns which are categorical
+  col_categorical <- names(dt_test[lapply(dt_test,length)>0])
+  dt <- vector('list',length(col_categorical))
+  for (i in seq_along(col_categorical)){
+    # get unique value for each categorical column
+    dt[[i]] <- unique(x[[col_categorical[i]]]) %>% sort(method = 'quick')
+  }
+  # Give the same vector length to each unique column--> can combine later
+  max_length <- sapply(dt,length) %>%  max()
+  for ( i in seq_along(dt)){
+    length(dt[[i]])<- max_length
+    dt[[i]]<- as.tibble(dt[[i]])
+  }
+  # combine all column to one
+  dt_last <- bind_cols(dt)
+  names(dt_last) <- col_categorical
+  return(dt_last)
+}
+
+```
+
+> It is really useful to examine categorical data
+
+```{r}
+unq_val(mpg)
+unq_val(sentiments)
+```
+It will check a sample of 1000 rows to identify what column are catergorical ( has only a small number of values), which columns are not ( has many values). Then it returns all of categorical columns with their unique values.
+
+## 3.2 Analyze text from word-level dataframe
+### 3.2.1. Example:
+  * Let's answer an interesting question: What are the __positive words__ in __negative sentence__ ?
+```{r}
+word_negtv_snt_negtv <- hotel_word %>% 
+  filter(qdap_score <0,bing >0) %>% 
+  count(word,sort = T)
+word_negtv_snt_negtv
+```
+We can see that there are some interesting words like `great`,`clean`. Let's see why the word setiment contradict the sentence sentiment (based on qdap):
+
+```{r,message=F}
+snt_negtv_filter <- hotel_sentence %>% 
+  inner_join(hotel_word %>% filter(qdap_score <0 )) %>% 
+  filter(word == 'clean') 
+# see the data yourself!
+```
+Remember my `hview()` or `ex_wr()` functions in `3.1.1`. It will be very useful here!
+
+We can see that most negative sentence which including `clean` words because:
+  * Has negation words: it is `not clean` at all
+  * Hotel is clean, but other factors are just bad.
+
+> Now we can check which hotel is not clean
+
+```{r,message=F}
+# see 2.3 for dealing with negation
+negation_clean <- hotel_word %>% 
+  anti_join(stop_words_mdf) %>% 
+  mutate(negation = lag(word)) %>%
+  filter(negation %in% negation_words) %>%
+  inner_join(get_sentiments('bing')) %>% 
+  filter(word == 'clean')
+
+negation_clean
+```
+```{r}
+
+```
+
+Well, imagine that we have a tagging column that has hotel name, we can easily tell which hotel is not clean!
+
+The method above looks quite good, but there are some sentence that it recognize incorrectly:
+
+```{r,message=F}
+s1<- "The handicapped room (which we did not ask for) was clean"
+s2<- "Although the rooms were very clean, it is a basic hotel"
+s3 <-  "The room was not that big, but it was clean." 
+negation_test <- function(x){
+  x %>% as.tibble() %>% 
+    unnest_tokens(word,value) %>% 
+    anti_join(stop_words_mdf)
+}
+negation_test(s1)
+negation_test(s2)
+negation_test(s3)
+```
+
+It seems that the problems lies on the `stop_words_mdf` table which remove
+```{r}
+stop_words_mdf %>% filter(str_detect(word,('(big)|(ask)|(believe)')))
+```
+
+Words like `big`, `ask`, `believe` should not be stopwords, but they are included in our `stop_words` table that consequently become `stop_words_mdf`. We can mannually check the `stop_words` and remove words that we believe that are not stopwords
+
+We can easily see that with my ideas of word-level dataframe, we can trace back to see what really happens and also modify the method accordingly.
+Also, we should not blindly use any lookup tables that are provided. Most of the look-up tables are not very big, so we can check and modify it according to the personal needs.Text analysis are not static, but works of __trial-and-errors__!
+
+### 3.2.2 Analyze without coding:
+Be careful! This section is a wall of text and without any codes!! However, I believe that it is the most important part of this articles :)
+
+We come back to our beloved word-level dataframe and see what are available here:  
+
+  * Position tagging: __paragrapth/comment__ ID, __sentence__ ID, __bigram/ word__ ID ( phrasal verb and compound words are at word level). Depending on different situations, we can add __time__ tag or __some specific tags__. Remember in the example above, I suggest tag the position with hotel so that we can find out which hotel is not clean!  
+  * Sentiment tagging: __sentence-level__ qdap(you can also make a paragraph with qdap-sentimentr combo), __word-level quantitative__ bing,afinn (we convert bing from qualitative to quantitative, eg: `positive` to `1`), __qualitative__ : nrc, __negation__(which shift sentiment), __emoticon__ (very important or nothing)
+  * Characteristic tagging: __stemming__, __part-of-speech__( noun,verb), __name__ tag, __phrasal_verb__ and __compound_words__  
+  
+Maybe we even do the sale tags!  
+Now let's combine all the taggings!  
+
+  * In the example above, I combine the `sentence_ID`, `qdap_score`, `bing_score` and with some `negation` help, we can answer the question: Which are positive words in negative sentence and which are the sentence position for it? Let's paraphrase it:  
+    - Positive words (bing_score)--> negative sentence(qdap_score)--> sentence_position (sentence_id)  
+
+  * Also, in part `2.1`, with `sentence_ID`, `qdap_score`, `bing_score`, we also can answer the following question?  
+    - At which sentence( `sentence_ID`) that sentence-level sentiment (`qdap_score`) are different from word-level method of sentiment (`bing_score`)  
+
+It is time for imagination (note that I put the tagging you need to use in `<()>` )
+
+  * Add `nrc` and remove `qdap_score` , we can deal with the following question:
+    - Which positive words (`bing_score`) contribute the joy sentiment (`afinn`) at which sentence( `sentence id`)?
+    
+  * Add `afinn` : Which are the most extreme (`afinn` as it has 4,5,-4,-5 score) positive words (`bing`)
+  
+  * Add `part of speech`: Which noun/adjective (`Part-of-speech`) are used the most in positive sentence (`qdap` and `sentence id` ). Are they positive or negative (`bing` or `afinn`)
+  
+  * Add `name` : At which place (`name`) people often have most positive experience (`qdap` or `bing score`), at which sentence ( `sentence id`)?
+  
+  * Add other postition,eg: hotel id/name: which hotel (`hotel id`) has the most negative comments ( `qdap` at comments level), negative comment content( `sentence level qdap`, `bing score`), and which characteristics(`words` or `part-of-speech: noun`) are hated the most?
+  
+  * Add `timeline tagging`: we can examine: how sentiments ( `qdap`,`bing`...) change over time (`time tagging`) in 1 hotel (`hotel id`). Is it better?
+  
+  * Add `emoticon` and we may have the most exciting question/answer: Which hotel(`hotel id`), place( `name tagging` ) has the most young people (`emoticon tagging`/`phrasal verb tagging`). We can just count the number of __emoticon__ and as __young people__ has tendency to use emoticon ( or maybe phrasal verb), so we just take the group with the greatest counts (`n()`) of emoticon.
+  
+  * Add `negation` and we may have other questions/anwers pairs: Which hotel (`hotel id`) has 1 good characteristics (bing) but other charactericstics are just bad. In __3.2.1__. We find out the negation of good sentiments (remember the __clean__ word?)--> therefore, good sentiments(`bing`) without negation(! %in% `negation`) but in negative sentence(`qdap`, `sentence id`) will answer this question!
+  
+The number of combination is not even exhausting and I believe that once the analyst get exposed to different situation, they can come up with more and more wonderful combination!
+  
+### 3.2.3 The most specific terms: tf-idf:
+Consider our following examples:
+```{r,comment=F}
+# I deliberately make 5 comments with the same beginning part for easier comparison
+s1 <- "The service here is worderful, food is good, staff is very nice. However, room is small,extremely small"
+s2 <- "The service here is worderful, food is good, staff is very nice.
+Atmosphere is a little bit cold, not to say very cold though"
+s3 <- "The service here is worderful, food is good, staff is very nice. Is is quite expensive"
+s4 <- "The service here is worderful, food is good, staff is very nice. Very expensive,though"
+s5 <- "The service here is worderful, food is good, staff is very nice. 
+The location is quite inconvenient"
+
+hotel_comment <- c(s1,s2,s3,s4,s5) %>% as.tibble() %>% 
+  mutate(comment_id = row_number()) %>% 
+  unnest_tokens(word,value) %>% 
+  anti_join(stop_words) 
+
+#simple take the word frequency
+word_count <- hotel_comment %>% count(word,sort = T)
+word_count
+# use tf-idf method
+tf_idf <- hotel_comment %>% 
+  count(comment_id,word) %>% 
+  bind_tf_idf(word,comment_id,n) %>% 
+  arrange(desc(tf_idf)) 
+tf_idf
+```
+
+Our 5 review comments all start with the same compliments. The difference are the critical comments at the end. If we only focus ont the word frequency, it means that we missed out important information like: `inconvenient`,`atmosphere`,`cold`,`expensive`
+
+Words like `food`,`service` have the idf = 0 because they appears in all of comments, therefore, they are not specific enough.
+So, what should we use? word count or tf_idf?
+
+The word- count method that we used before this chapter is to answer the questions: "Which are the most frequent words in __the whole text__ that has certain characteristics?"
+
+The tf-idf method is to answer the question: "Which are the most __specific words__ in __each unit__ that has certain characteristics?"
+
+I believe that the combination between 2 methods will give us a more comprehensive picture:
+```{r}
+important_word <- bind_rows(head(word_count,5) %>% select(word), 
+                            head(tf_idf,5) %>% select(word))
+```
+We also need to consider other factors:
+
+  * Should we remove the stopwords: Let's do a small mathematic:  $tf_idf = tf * idf = (word count/number of words) * idf$. The idf and word_count will not change regardless of we remove stop words or not. Consider following example:
+```{r,message=F}
+"As far as I know, it is bad and ugly" %>% as_tibble() %>% 
+  unnest_tokens(word,value) %>% 
+  anti_join(stop_words_mdf)
+
+"Is it bad and ugly" %>% as_tibble() %>% 
+  unnest_tokens(word,value) %>% 
+  anti_join(stop_words_mdf)
+```
+We can see that 2 comments has basically same meaning. If we remove stopwords, then the tf of the word `bad` are both __1/2__ for 2 comments, while is it __1/10__ for comment1 and __1/5__ for comment2. For comparison, it is clear that removing stopwords are better and gives at a fairer view. Normally, some extremely frequent words like `the`,`a`,`an` also have a low __idf__ (as it appears in most of the documents!) so if we look at the tf_idf, it will be filtered out with or without removing stop words. 
+
+Anyway, the ideas of stopwords are: words which doesn't affect the contents, so removing them are always better.
+
+  * How about words word high tf. Are we already covered by the word_count and tf_idf method?
+    - high tf, low tf_idf: It means that words will appear in most of the documents, therefore with high tf --> high word counts in the __whole text__. We already dealt with it
+    - high tf, high tf_idf: We just take the top of high tf_idf--> already covered
+    - high tf, medium tf_idf: not yet covered--> need to be considered.
+
+Therefore, our most important_words will be:  
+$important_words = high word_count+ high tf + high tf_idf$
+As there are some overlap between high word_count and high tf , it will become:
+$important_words = union(high word_count+ high tf) + high tf_idf$
+
+We already covered all of the most important __single words__ in the __whole text__. Next chapter, we will cover most important __pair of words__ with the package `widyr`
+
+## 3.3 Analyze pair of words
+
+Let's start with an example ( It looks quite silly, though!)
+```{r,message=F}
+s1 <- "price is good. Staff is bad"
+s2 <- "Price is good. Staff is bad. Decoration is good"
+s3 <- "Decoration is bad. Atmosphere is good. Staff is bad"
+s4 <- "Price is bad. Decoration is good. Staff is good"
+s5 <- "Atmosphere is good. Price is bad. Decoration is good"
+# single word- method
+c(s1,s2,s3,s4,s5) %>% as.tibble() %>% 
+  unnest_tokens(word,value) %>% 
+  anti_join(stop_words_mdf) %>% 
+  count(word)
+# pair of word-method
+ c(s1,s2,s3,s4,s5) %>% as.tibble() %>% 
+  unnest_tokens(sentence,value,"sentences") %>% 
+  mutate(sentence_id = row_number()) %>% 
+  unnest_tokens(word,sentence) %>% 
+   anti_join(stop_words_mdf) %>% 
+  #count(sentence_id,word) %>% 
+  pairwise_count(word,sentence_id) %>% 
+  inner_join(get_sentiments('bing'),by = c('item1'='word')) %>% 
+  anti_join(get_sentiments('bing'),by = c('item2'='word'))
+
+```
+
+With the single word method, we can easily see all of important words, but we can never know whether the `atmosphere` is `good` or `bad` ( We might use sentiment at the sentence level using qdap or bing, but there will be a lot of noise in a complicated sentences!). With the __pair of word__ method, however, we can clearly see which sentiments go with which characteristics. It is clear that the comments indicate a place with good decorations and atmosphere!.
+
+We can also use `pairwise_cor()` function which not only take into consideration how word pairs appear together as well as not together
+
+```{r,message=F}
+c(s1,s2,s3,s4,s5) %>% as.tibble() %>% 
+   unnest_tokens(sentence,value,"sentences") %>% 
+   mutate(sentence_id = row_number()) %>% 
+   unnest_tokens(word,sentence) %>% 
+   anti_join(stop_words_mdf) %>% 
+   count(sentence_id,word) %>% 
+   pairwise_cor(word,sentence_id,n) %>% 
+   inner_join(get_sentiments('bing'),by = c('item1'='word')) %>% 
+   anti_join(get_sentiments('bing'),by = c('item2'='word')) %>% 
+   arrange(desc(correlation))
+```
+
+It gives the same answer to `pairwise_count` above! (Eg: we have 3 `bad staff` and 2 `good staff`, hence staff is _positively correlated with bad_, and _negatively correlated with good_)
+
+However, `pairwise_cor()` should be used with great care. Take the following examples:
+ 
+```{r,message=F}
+'price is good. Atmosphere is good. Staff is good.
+ Decoration is bad. Price is expensive . Overally good'  %>% as.tibble() %>% 
+  unnest_tokens(sentence,value,"sentences") %>% 
+  mutate(sentence_id = row_number()) %>% 
+  unnest_tokens(word,sentence) %>% 
+  anti_join(stop_words_mdf) %>% 
+  pairwise_cor(word,sentence_id) %>% 
+  inner_join(get_sentiments('bing'),by = c('item1'='word')) %>% 
+  anti_join(get_sentiments('bing'),by = c('item2'='word')) %>% 
+  arrange(desc(correlation))
+```
+
+We can see from above example that, although the result is still correct, but as the `good` is link to many characteristics, then the correlation is simply diluted--> will be filtered out if we `select top`. In this example, all of pair of words has the same weights, so counting is better!
+
+We also need to consider the __noise__:
+```{r}
+# We can never know price is good or bad, since good and bad at the same sentence
+"The price is good, but staff is bad"
+```
+
+It should be noted that, we try to reduce the 'noise' as much as possible by analyzing at the smallest group available (sentence_id). If we use a bigger group, eg: `comment` then the __noise__ will be greater. Once again, you can see how position tagging with sentence_id can be useful!
+
+Count method and correlation methods are both useful and if we use it at the sentence level, it is very likely that the results are correct. However, both of them are not perfect and can supplement each other.Therefore, we should combine 2 methods to show which are the most important pair of words:
+
+$important word pair = most frequent pair + most correlated pair$
+
+We will do a small example to deal with word pairs:
+Which word pairs are most common in negative sentence(`qdapscore`, `sentence_id`)?
+
+```{r}
+word_cnt_snt_negtv <- hotel_word %>% 
+  filter(qdap_score <0) %>% 
+  anti_join(stop_words_mdf) %>% #hview()
+  pairwise_count(word,sentence_id) %>% #hview() %>% 
+  arrange(desc(n)) %>% 
+  inner_join(get_sentiments('bing'),by = c('item1'='word')) %>% 
+  filter(!item2 %in% negation_words)# so many item2 with negations:
+```
+
+We can see that there are some positive sentiment pairs here which contradict the negative sentiments of the sentence. We will try to analyze them:
+
+```{r}
+hotel_sentence %>% 
+  filter(snt_sentiment <0) %>% 
+  filter(str_detect(sentence,'hot'),str_detect(sentence,'water')) 
+## Do other filter by yourself
+```
+
+  * The word `like` is more likely to use as a connection word rather than a sentiments.
+  * It seems that some hotels has the problems with `water` not being `hot` enough!
+  * Some hotels are not `good` (negation) and some are good but not enough!
+  * Some hotels are `nice` but not enough. And we can see some of `noise` context here,eg:_"
+  I was worried that the actual hotel would not be as nice as photos but I was wrong"_ . It is definitely a positive sentence but the sentiment is twisted as there are so many negations here ( It is negation of negation). There are some other cases that you can.
+
+We can check some negative pairs: `expensive hotel`, `noise street`, `bad hotel`, `rude staff`. It is quite clear that those pair truly represent what it means!
+
+Next we test the word correlations:
+```{r}
+hotel_word %>% 
+  filter(qdap_score <0) %>% 
+  anti_join(stop_words_mdf) %>% #hview()
+  group_by(word) %>% 
+  filter(n() >=8) %>% 
+  pairwise_cor(word,sentence_id) %>% 
+  inner_join(get_sentiments('bing'),by = c('item1'='word')) %>% 
+  arrange(desc(correlation)) 
+
+```
+
+It should be noted that every time you change the value in `filter(n() >=...), the results will be different as we only focus on relatively high frequent words. However, you can change the values and see what happen! 
+
+A little bit loop might help!
+
+```{r}
+dt <- list()
+n <- 1:10
+for (i in 1:10){
+dt[[i]] <- hotel_word %>% 
+    filter(qdap_score <0) %>% 
+    anti_join(stop_words_mdf) %>% #hview()
+    group_by(word) %>% 
+    filter(n() >= (i +7)) %>% # we will go from  n =8 to n = 17
+    pairwise_cor(word,sentence_id) %>% 
+    inner_join(get_sentiments('bing'),by = c('item1'='word')) %>% 
+    arrange(desc(correlation)) %>% 
+    head(5)
+}
+
+word_cor_snt_negtv <- bind_rows(dt) %>% 
+  distinct(item1,item2,correlation,sentiment)
+```
+As we only filter out single words with low frequency, it doesn't guarantee the words pair are highly frequent. Remember our friends the `word pair frequency` dataframe? It is time to meet him
+
+```{r,message=F}
+word_cor_snt_negtv_high_freq <- word_cor_snt_negtv %>% 
+  semi_join(word_cnt_snt_negtv %>%  filter(n >=4)) 
+  
+word_cor_snt_negtv_high_freq
+
+```
+
+As we apply different `n filtering`, then there are some item pairs having different correlation, just use `distinct()` function to remove it!
+
+```{r}
+word_cor_snt_negtv_high_freq %>%  distinct(item1,item2)
+```
+
+Just a litte check and we can see some other problems: `outrageour prices`, `smoking` , especially in `casino` and there are no `free internet`. Very informative, isn't it?
+
+We can see that `word count` and `word correlation` methods can supplement each others very well. We can modify our previous formulas:
+
+$Important word pair = word count + join(high word count, word cor)$
+
+Apply the same method in `3.2.2` for raising ideas and we might get stuck in a never-ending
+interesting analysis worlds! 
+Here are some notes/summary for working with `word pairs`:
+  * For the analysis being more useful, we should filter 1 item with sentiments. For the remaining item, we can filter out some "not interesting words" (eg: filter for negations word) .Words will always go with pairs, eg :`a-b, b-a`--> apply 1 kind of filter for each column is sufficient!
+  * To avoid `noise`, pair of words should be in the same sentence (`sentence id`). I've discussed it already.
+  * We normally apply 2 filter for `word correlation`, 1 filter is to remove low frequency words, the other is to remove low frequency word pairs. They are very different!
+  * We use `group by` for `word correlation` but it is just for filtering out word with low frequency. Never use summarisation/count() after that ( I mistakently do it for my first time just as a habit of using `summarisation` after `group by`). It stills give the results but the results are incorrect!
+
+\pagebreak
+
+# Last words
+
+We are nearly to the end of the (very long ) articles! I strongly believe that, although my method is very simple with (almost) no modelling, it is not necessarily a primitive methods:
+
+  * It use different tools and combine them flexibly. No tools are perfect and comprehensive enough.
+  * It use the tidy dataframe methods which are very prevalent in R! It is very similar to Excel and SQL which I beleve that many data analyst are used to.
+  * As it is so simple, it avoid the situation of modelling when analyst just put everythings in blackbox and hope something happen. With my method, we can have full control over what we are doing!
+  * It allows maximum and never-ending combination. We will never get stuck in one analysis. It is not restricted by technique, but ideas. It highly correlate with data analysis. The most important factor is idea, not technique. Since many data analyst comes from non-programming occupation, a method focusing on ideas, not technique might be more suitable!
+
+I have to admit that, despite being discussed in this articles, I find that the `part-of-speech` and `stemming` parts are very unsatisfactory and highly vunerable to the inaccuracy. The `emoticon` part is objectively unsatisfactory, too, due to the possibility of users using incorrect,sarcastic emoji is really high. I hope that there will be suggestion to improve them, alongside other parts.
+
+This articles is mostly based on the ideas in the book `Tidy Text Mining with R` with supplemental ideas coming from `qdap` and `sentimentr` library. For more details, go to the original sources.
+
+__Good luck!__
+\pagebreak
+
+# Reference
+
+Text mining with R, Julia Silge and David Robinson <https://www.tidytextmining.com/>.
+
+Qdap vignette, Tyler Rinker <http://trinker.github.io/qdap/vignettes/qdap_vignette.html>.
+
+Sentimentr vignettes, Tyler Rinker <https://github.com/trinker/sentimentr>.
+
+Widyr packages, David Robinson <https://cran.r-project.org/web/packages/widyr/widyr.pdf>.
+
+R for data science, Hadley Wickham <http://r4ds.had.co.nz/>.
+
+Hunspell vignette, Jeroen Ooms <https://cran.r-project.org/web/packages/hunspell/vignettes/intro.html>.
+
+RDRPOSTagger, Dat Quoc Nguyen, Dai Quoc Nguyen, Dang Duc Pham and Son Bao Pham, <https://github.com/bnosac/RDRPOSTagger>.
+
+Arnold, Taylor B. 2016. cleanNLP: A Tidy Data Model for Natural Language
+Processing. <https://cran.r-project.org/package=cleanNLP>.
+
+Arnold, Taylor, and Lauren Tilton. 2016. coreNLP: Wrappers Around Stanford
+CoreNLP Tools. <https://cran.r-project.org/package=coreNLP>.  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
